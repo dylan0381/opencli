@@ -1,7 +1,7 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import { executeCommand } from './engine.js';
-import { type CliCommand, fullName, getRegistry, strategyLabel } from './registry.js';
+import { Strategy, type CliCommand, fullName, getRegistry, strategyLabel } from './registry.js';
 import { render as renderOutput } from './output.js';
 import { BrowserBridge, CDPBridge } from './browser/index.js';
 import { browserSession, DEFAULT_BROWSER_COMMAND_TIMEOUT, runWithTimeout } from './runtime.js';
@@ -162,13 +162,18 @@ export function runCli(BUILTIN_CLIS: string, USER_CLIS: string): void {
         if (shouldUseBrowserSession(cmd)) {
           const BrowserFactory = process.env.OPENCLI_CDP_ENDPOINT ? CDPBridge : BrowserBridge;
           result = await browserSession(BrowserFactory as any, async (page) => {
+            // Cookie/header strategies require same-origin context for credentialed fetch.
+            if ((cmd.strategy === Strategy.COOKIE || cmd.strategy === Strategy.HEADER) && cmd.domain) {
+              try { await page.goto(`https://${cmd.domain}`); await page.wait(2); } catch {}
+            }
             return runWithTimeout(executeCommand(cmd, page, kwargs, actionOpts.verbose), { timeout: cmd.timeoutSeconds ?? DEFAULT_BROWSER_COMMAND_TIMEOUT, label: fullName(cmd) });
           }, { workspace: `site:${cmd.site}` });
         } else { result = await executeCommand(cmd, null, kwargs, actionOpts.verbose); }
         if (actionOpts.verbose && (!result || (Array.isArray(result) && result.length === 0))) {
           console.error(chalk.yellow(`[Verbose] Warning: Command returned an empty result. If the website structural API changed or requires authentication, check the network or update the adapter.`));
         }
-        renderOutput(result, { fmt: actionOpts.format, columns: cmd.columns, title: `${cmd.site}/${cmd.name}`, elapsed: (Date.now() - startTime) / 1000, source: fullName(cmd) });
+        const resolved = getRegistry().get(fullName(cmd)) ?? cmd;
+        renderOutput(result, { fmt: actionOpts.format, columns: resolved.columns, title: `${resolved.site}/${resolved.name}`, elapsed: (Date.now() - startTime) / 1000, source: fullName(resolved), footerExtra: resolved.footerExtra?.(kwargs) });
       } catch (err: any) { 
         if (err instanceof CliError) {
           console.error(chalk.red(`Error [${err.code}]: ${err.message}`));
